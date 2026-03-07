@@ -1,0 +1,15 @@
+[tool.ruff]
+line-length = 88
+
+[tool.ruff.lint]
+extend-select = [
+  "B",   
+  "UP",  
+  "I",   
+  "SIM", 
+  "S",   
+]
+ignore = [
+  "TD",     
+  "FIX002", 
+]
