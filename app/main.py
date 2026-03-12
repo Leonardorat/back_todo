@@ -117,23 +117,8 @@ def register(data: Reg, conn: Annotated[sqlite3.Connection, Depends(db_conn)]):
             "INSERT INTO users (name, email, password_hash) VALUES (?, ?, ?)",
             (data.name, data.email, password_hash),
         )
-        return {"id": cur.lastrowid, "email": data.email}
     except sqlite3.IntegrityError as err:
-        raise HTTPException(
-            status_code=409,
-            detail="Email already registered",
-        ) from err
-
-
-@app.post("/login")
-def login(data: Log, conn: Annotated[sqlite3.Connection, Depends(db_conn)]):
-    row = conn.execute(
-        "SELECT id, password_hash FROM users WHERE email = ?",
-        (data.email,),
-    ).fetchone()
-
-    if row is None or not verify_password(data.password, row["password_hash"]):
-        raise HTTPException(status_code=401, detail="Invalid credentials")
+        raise HTTPException(status_code=409, detail="Email already registered") from err
 
     token = create_token()
     conn.execute(
@@ -141,10 +126,44 @@ def login(data: Log, conn: Annotated[sqlite3.Connection, Depends(db_conn)]):
         INSERT INTO sessions (token, user_id, expires_at)
         VALUES (?, ?, datetime('now', '+7 days'))
         """,
-        (token, row["id"]),
+        (token, cur.lastrowid),
     )
+
     return {"token": token}
 
+@app.post("/login")
+def login(data: Log, conn: Annotated[sqlite3.Connection, Depends(db_conn)]):
+    user = conn.execute(
+        "SELECT id, password_hash FROM users WHERE email = ?",
+        (data.email,),
+    ).fetchone()
+
+    if user is None or not verify_password(data.password, user["password_hash"]):
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+
+    #for check
+    existing = conn.execute(
+        """
+        SELECT token
+        FROM sessions
+        WHERE user_id = ?
+          AND (expires_at IS NULL OR expires_at > datetime('now'))
+        """,
+        (user["id"],),
+    ).fetchone()
+
+    if existing is not None:
+        raise HTTPException(status_code=409, detail="Active session already exists. Logout first.")
+
+    token = create_token()
+    conn.execute(
+        """
+        INSERT INTO sessions (token, user_id, expires_at)
+        VALUES (?, ?, datetime('now', '+7 days'))
+        """,
+        (token, user["id"]),
+    )
+    return {"token": token}
 
 @app.get("/todos")
 def list_todos(
