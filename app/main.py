@@ -107,7 +107,7 @@ def get_current_user_id(
 
 CurrentUserId = Annotated[int, Depends(get_current_user_id)]
 
-
+#right now register giving a token
 @app.post("/register")
 def register(data: Reg, conn: Annotated[sqlite3.Connection, Depends(db_conn)]):
     password_hash = get_password_hash(data.password)
@@ -130,7 +130,7 @@ def register(data: Reg, conn: Annotated[sqlite3.Connection, Depends(db_conn)]):
     )
 
     return {"token": token}
-
+#not necessary for todo
 @app.post("/login")
 def login(data: Log, conn: Annotated[sqlite3.Connection, Depends(db_conn)]):
     user = conn.execute(
