@@ -32,7 +32,7 @@ ORDER BY id DESC
 LIMIT ? OFFSET ?
 """
 
-
+##need check models. need add error handling
 class Todos(BaseModel):
     title: str
     description: str | None = None
@@ -208,7 +208,7 @@ def logout(
     conn.execute("DELETE FROM sessions WHERE token = ?", (token,))
     return {"status": "ok"}
 
-
+#POST /todos, PUT /todos/{id}, DELETE /todos/{id}
 @app.get("/health")
 def health(conn: Annotated[sqlite3.Connection, Depends(db_conn)]):
     conn.execute("SELECT 1;")
