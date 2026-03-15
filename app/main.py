@@ -2,9 +2,18 @@ import secrets
 import sqlite3
 from typing import Annotated
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query
+from fastapi import (
+    Depends,
+    FastAPI,
+    Header,
+    HTTPException,
+    Path,
+    Query,
+    Response,
+    status,
+)
 from pwdlib import PasswordHash
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.db import get_conn
 
@@ -32,22 +41,22 @@ ORDER BY id DESC
 LIMIT ? OFFSET ?
 """
 
-##need check models. need add error handling
-class Todos(BaseModel):
-    title: str
-    description: str | None = None
+
+class TodoIn(BaseModel):
+    title: str = Field(..., min_length=1, max_length=200)
+    description: str | None = Field(default=None, max_length=1000)
     completed: bool = False
 
 
 class Reg(BaseModel):
-    name: str
-    email: str
-    password: str
+    name: str = Field(..., min_length=1, max_length=100)
+    email: str = Field(..., min_length=3, max_length=255)
+    password: str = Field(..., min_length=8, max_length=128)
 
 
 class Log(BaseModel):
-    email: str
-    password: str
+    email: str = Field(..., min_length=3, max_length=255)
+    password: str = Field(..., min_length=1, max_length=128)
 
 
 def db_conn():
@@ -107,7 +116,45 @@ def get_current_user_id(
 
 CurrentUserId = Annotated[int, Depends(get_current_user_id)]
 
-#right now register giving a token
+
+def todo_to_dict(row: sqlite3.Row) -> dict:
+    return {
+        "id": row["id"],
+        "title": row["title"],
+        "description": row["description"],
+        "completed": bool(row["completed"]),
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+    }
+
+
+def get_todo_row(conn: sqlite3.Connection, todo_id: int) -> sqlite3.Row | None:
+    return conn.execute(
+        """
+        SELECT id, user_id, title, description, completed, created_at, updated_at
+        FROM todos
+        WHERE id = ?
+        """,
+        (todo_id,),
+    ).fetchone()
+
+
+def get_owned_todo_or_error(
+    conn: sqlite3.Connection,
+    todo_id: int,
+    user_id: int,
+) -> sqlite3.Row:
+    row = get_todo_row(conn, todo_id)
+
+    if row is None:
+        raise HTTPException(status_code=404, detail="Todo not found")
+
+    if row["user_id"] != user_id:
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    return row
+
+
 @app.post("/register")
 def register(data: Reg, conn: Annotated[sqlite3.Connection, Depends(db_conn)]):
     password_hash = get_password_hash(data.password)
@@ -130,7 +177,8 @@ def register(data: Reg, conn: Annotated[sqlite3.Connection, Depends(db_conn)]):
     )
 
     return {"token": token}
-#not necessary for todo
+
+
 @app.post("/login")
 def login(data: Log, conn: Annotated[sqlite3.Connection, Depends(db_conn)]):
     user = conn.execute(
@@ -141,7 +189,6 @@ def login(data: Log, conn: Annotated[sqlite3.Connection, Depends(db_conn)]):
     if user is None or not verify_password(data.password, user["password_hash"]):
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
-    #for check
     existing = conn.execute(
         """
         SELECT token
@@ -153,7 +200,10 @@ def login(data: Log, conn: Annotated[sqlite3.Connection, Depends(db_conn)]):
     ).fetchone()
 
     if existing is not None:
-        raise HTTPException(status_code=409, detail="Active session already exists. Logout first.")
+        raise HTTPException(
+            status_code=409,
+            detail="Active session already exists. Logout first.",
+        )
 
     token = create_token()
     conn.execute(
@@ -164,6 +214,7 @@ def login(data: Log, conn: Annotated[sqlite3.Connection, Depends(db_conn)]):
         (token, user["id"]),
     )
     return {"token": token}
+
 
 @app.get("/todos")
 def list_todos(
@@ -185,18 +236,60 @@ def list_todos(
             SQL_SELECT_COMPLETED, (user_id, comp, limit, offset)
         ).fetchall()
 
-    data = [
-        {
-            "id": r["id"],
-            "title": r["title"],
-            "description": r["description"],
-            "completed": bool(r["completed"]),
-            "created_at": r["created_at"],
-            "updated_at": r["updated_at"],
-        }
-        for r in rows
-    ]
+    data = [todo_to_dict(r) for r in rows]
     return {"data": data, "page": page, "limit": limit, "total": total}
+
+
+@app.post("/todos", status_code=status.HTTP_201_CREATED)
+def create_todo(
+    data: TodoIn,
+    user_id: CurrentUserId,
+    conn: Annotated[sqlite3.Connection, Depends(db_conn)],
+):
+    cur = conn.execute(
+        """
+        INSERT INTO todos (user_id, title, description, completed)
+        VALUES (?, ?, ?, ?)
+        """,
+        (user_id, data.title, data.description, int(data.completed)),
+    )
+
+    row = get_todo_row(conn, cur.lastrowid)
+    return todo_to_dict(row)
+
+
+@app.put("/todos/{todo_id}")
+def update_todo(
+    data: TodoIn,
+    user_id: CurrentUserId,
+    conn: Annotated[sqlite3.Connection, Depends(db_conn)],
+    todo_id: int = Path(..., ge=1),
+):
+    get_owned_todo_or_error(conn, todo_id, user_id)
+
+    conn.execute(
+        """
+        UPDATE todos
+        SET title = ?, description = ?, completed = ?
+        WHERE id = ?
+        """,
+        (data.title, data.description, int(data.completed), todo_id),
+    )
+
+    row = get_todo_row(conn, todo_id)
+    return todo_to_dict(row)
+
+
+@app.delete("/todos/{todo_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_todo(
+    user_id: CurrentUserId,
+    conn: Annotated[sqlite3.Connection, Depends(db_conn)],
+    todo_id: int = Path(..., ge=1),
+):
+    get_owned_todo_or_error(conn, todo_id, user_id)
+
+    conn.execute("DELETE FROM todos WHERE id = ?", (todo_id,))
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @app.post("/logout")
@@ -208,7 +301,7 @@ def logout(
     conn.execute("DELETE FROM sessions WHERE token = ?", (token,))
     return {"status": "ok"}
 
-#POST /todos, PUT /todos/{id}, DELETE /todos/{id}
+
 @app.get("/health")
 def health(conn: Annotated[sqlite3.Connection, Depends(db_conn)]):
     conn.execute("SELECT 1;")
